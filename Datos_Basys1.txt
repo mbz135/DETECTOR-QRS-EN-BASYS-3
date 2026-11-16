@@ -1,0 +1,63 @@
+import os
+import numpy as np
+import wfdb
+from scipy.signal import resample_poly
+
+# --------------------------------------------------------------------------
+# PARÁMETROS DE CONFIGURACIÓN (Rutas exactas)
+# --------------------------------------------------------------------------
+FS_DESTINO = 200          # Frecuencia requerida
+GANANCIA_ADC = 200        # Cuentas/mV
+BIT_WIDTH = 12            # Ancho de palabra para la ROM (12 bits con signo)
+N_SEG = 8192              # Muestras exactas por fragmento para que quepa en la BRAM
+
+# Rutas especificadas
+CARPETA_DATOS = r"D:\Proyecto Digitales 2\PROJECTO_DIGITALES\PROJECTO_DIGITALES\datos"
+CARPETA_SALIDA = r"D:\Proyecto Digitales 2\PROJECTO_DIGITALES\PROJECTO_DIGITALES"
+REGISTROS = ['100', '106', '119', '200']  # Los 4 pacientes a unir
+
+def generar_rom_4seg():
+    os.makedirs(CARPETA_SALIDA, exist_ok=True)
+    rom_total = [] # Lista maestra para juntar los 4 pacientes
+
+    print("Generando archivo consolidado para la ROM de Vivado...")
+    
+    for nombre_registro in REGISTROS:
+        ruta_reg = os.path.join(CARPETA_DATOS, nombre_registro)
+        if not all(os.path.exists(f"{ruta_reg}.{e}") for e in ('dat', 'hea')):
+            print(f"   [Error] Falta el registro {nombre_registro} en: {CARPETA_DATOS}")
+            continue
+
+        # 1 y 2. Cargar y remuestrear a 200 Hz
+        reg = wfdb.rdrecord(ruta_reg)
+        senal_mV = reg.p_signal[:, 0]
+        s200 = resample_poly(senal_mV, up=5, down=9)
+
+        # 3 y 4. Escalar y saturar a 12 bits con signo
+        x = np.round(s200 * GANANCIA_ADC).astype(np.int32)
+        hi = (1 << (BIT_WIDTH - 1)) - 1  # 2047
+        lo = -(1 << (BIT_WIDTH - 1))     # -2048
+        x_saturado = np.clip(x, lo, hi)
+
+        # 5. EL RECORTE: Tomar estrictamente las primeras 8192 muestras
+        fragmento = x_saturado[0:N_SEG]
+        rom_total.extend(fragmento)
+        
+        print(f"   -> Registro {nombre_registro} procesado: {len(fragmento)} muestras añadidas.")
+
+    # 6. Guardar la ROM completa
+    archivo_hex = os.path.join(CARPETA_SALIDA, "rom_ecg_4seg.hex")
+    hex_digits = (BIT_WIDTH + 3) // 4 
+    
+    with open(archivo_hex, 'w', newline='\n') as f:
+        for v in rom_total:
+            val = int(v)
+            if val < 0:
+                val += (1 << BIT_WIDTH)
+            f.write(f"{val:0{hex_digits}X}\n")
+
+    print(f"\n[Éxito] Archivo FINAL guardado en: {archivo_hex}")
+    print(f"Total de muestras en la ROM: {len(rom_total)} (Deben ser exactamente 32768)")
+
+if __name__ == '__main__':
+    generar_rom_4seg()
