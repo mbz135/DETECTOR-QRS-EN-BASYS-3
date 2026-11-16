@@ -1,0 +1,45 @@
+## Reloj de 100 MHz (Pin W5)
+set_property PACKAGE_PIN W5 [get_ports clk]							
+	set_property IOSTANDARD LVCMOS33 [get_ports clk]
+	# Esta línea le dice a Vivado que analice los tiempos del circuito basándose en 10 ns (100 MHz)
+	create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports clk]
+
+## Switches (SW[1:0] para seleccionar el fragmento del paciente)
+set_property PACKAGE_PIN V17 [get_ports {sw[0]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {sw[0]}]
+set_property PACKAGE_PIN V16 [get_ports {sw[1]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {sw[1]}]
+
+## LEDs (LED[0] para el destello del latido)
+set_property PACKAGE_PIN U16 [get_ports beat_led]					
+	set_property IOSTANDARD LVCMOS33 [get_ports beat_led]
+
+## Display 7 Segmentos (Cátodos de la A a la G)
+set_property PACKAGE_PIN W7 [get_ports {seg[0]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {seg[0]}]
+set_property PACKAGE_PIN W6 [get_ports {seg[1]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {seg[1]}]
+set_property PACKAGE_PIN U8 [get_ports {seg[2]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {seg[2]}]
+set_property PACKAGE_PIN V8 [get_ports {seg[3]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {seg[3]}]
+set_property PACKAGE_PIN U5 [get_ports {seg[4]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {seg[4]}]
+set_property PACKAGE_PIN V5 [get_ports {seg[5]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {seg[5]}]
+set_property PACKAGE_PIN U7 [get_ports {seg[6]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {seg[6]}]
+
+## Display 7 Segmentos (Ánodos para seleccionar qué dígito encender)
+set_property PACKAGE_PIN U2 [get_ports {an[0]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {an[0]}]
+set_property PACKAGE_PIN U4 [get_ports {an[1]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {an[1]}]
+set_property PACKAGE_PIN V4 [get_ports {an[2]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {an[2]}]
+set_property PACKAGE_PIN W4 [get_ports {an[3]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {an[3]}]
+
+## Botón (BTNC - Botón central para el Reset síncrono)
+set_property PACKAGE_PIN U18 [get_ports rst]						
+	set_property IOSTANDARD LVCMOS33 [get_ports rst]
