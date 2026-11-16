@@ -1,0 +1,117 @@
+//////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 04.11.2026 16:19:10
+// Design Name: 
+// Module Name: simu
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////
+// Testbench: top_qrs (detector QRS Pan-Tompkins)
+// - Acelera el tick (TICK_DIV pequeno) para no simular 5 ms por muestra.
+// - Cuenta e imprime cada latido detectado con su numero de muestra y tiempo
+//   equivalente a 200 Hz.
+//////////////////////////////////////////////////////////////////////////////
+module tb_top_qrs;
+
+    // ---------------- Parametros de simulacion ----------------
+    localparam TICK_DIV   = 50;      // 50 ciclos de clk por muestra (real: 500000)
+    localparam N_MUESTRAS = 8192;    // muestras a simular (un segmento completo = ~41 s de ECG)
+    localparam [1:0] SEG  = 2'd3;    // segmento de la ROM (0..3), entra por sw
+
+    // ---------------- Senales ----------------
+    reg        clk = 0;
+    reg        rst = 1;
+    reg  [1:0] sw  = SEG;
+    wire       beat_led;
+    wire [6:0] seg;
+    wire [3:0] an;
+
+    // ---------------- DUT ----------------
+    top_qrs #(
+        .TICK_DIV(TICK_DIV),
+        .LED_HOLD(10_000_000)
+    ) dut (
+        .clk(clk), .rst(rst), .sw(sw),
+        .beat_led(beat_led), .seg(seg), .an(an)
+    );
+
+    // Reloj de 100 MHz
+    always #5 clk = ~clk;
+
+    // ---------------- Contadores / monitoreo ----------------
+    integer muestras = 0;     // muestras que han salido de la ROM hacia el filtro
+    integer latidos  = 0;
+    integer ultima_m = 0;
+    real    t_s, rr_s, bpm;
+
+    // Cuenta de muestras: cada tick s0 es una muestra nueva
+    always @(posedge clk) if (!rst && dut.s0) muestras <= muestras + 1;
+
+    // Latido detectado (pulso 'beat' de 1 ciclo dentro del detector)
+    always @(posedge clk) begin
+        if (!rst && dut.beat) begin
+            latidos = latidos + 1;
+            t_s = muestras / 200.0;
+            if (latidos > 1) begin
+                rr_s = (muestras - ultima_m) / 200.0;
+                bpm  = 60.0 / rr_s;
+                $display("Latido %3d | muestra %5d | t = %7.3f s | RR = %5.3f s | %5.1f bpm",
+                         latidos, muestras, t_s, rr_s, bpm);
+            end else begin
+                $display("Latido %3d | muestra %5d | t = %7.3f s", latidos, muestras, t_s);
+            end
+            ultima_m = muestras;
+        end
+    end
+
+    // Aviso cuando termina la fase de aprendizaje
+    always @(posedge clk)
+        if (!rst && dut.u_detector.state == 3'd1)
+            $display(">> Fin de aprendizaje en muestra %0d | SPKI0=%0d  NPKI0=%0d",
+                     muestras, dut.u_detector.lmax, dut.u_detector.lsum >>> 10);
+
+    // ---------------- Estimulo ----------------
+    initial begin
+        // Formas de onda (Vivado ya guarda todo; esto es para GTKWave/Icarus)
+        $dumpfile("tb_top_qrs.vcd");
+        $dumpvars(0, tb_top_qrs);
+
+        // Reset
+        repeat (20) @(posedge clk);
+        rst = 0;
+
+        // Esperar N muestras
+        wait (muestras >= N_MUESTRAS);
+        repeat (TICK_DIV * 5) @(posedge clk);
+
+        $display("--------------------------------------------------");
+        $display("Muestras procesadas : %0d (%0.1f s de ECG)", muestras, muestras/200.0);
+        $display("Latidos detectados  : %0d", latidos);
+        if (latidos > 0)
+            $display("FC media aprox.     : %0.1f bpm", latidos * 60.0 / ((muestras - 512)/200.0));
+        $display("--------------------------------------------------");
+        $finish;
+    end
+
+    // Seguridad: si algo se cuelga
+    initial begin
+        #(10 * TICK_DIV * (N_MUESTRAS + 2000) + 1_000_000);
+        $display("TIMEOUT");
+        $finish;
+    end
+
+endmodule
