@@ -1,0 +1,163 @@
+"""Modelo de referencia (bit-exact) del detector QRS de Basys 3 y verificacion
+contra las anotaciones del MIT-BIH.  Replica los modulos Verilog: lpf, hpf,
+deriv, square, integ y qrs_fsm, con los mismos anchos de palabra."""
+import os, sys
+import numpy as np
+import wfdb
+from scipy.signal import resample_poly
+
+DATA = os.environ.get("MITBIH_DIR", "/mnt/user-data/uploads")  # carpeta con .dat/.hea/.atr
+REGISTROS = ['100', '106', '119', '200']
+N_SEG = 8192
+BEATS = set("NLRBAaJSVrFejnE/fQ?")        # simbolos de latido (no ritmo/ruido)
+
+
+def wrap(v, bits):
+    m = 1 << bits
+    v &= m - 1
+    return v - m if v >= (m >> 1) else v
+
+
+def cargar_segmento(reg):
+    r = wfdb.rdrecord(os.path.join(DATA, reg))
+    s200 = resample_poly(r.p_signal[:, 0], up=5, down=9)
+    x = np.clip(np.round(s200 * 200).astype(np.int64), -2048, 2047)[:N_SEG]
+    ann = wfdb.rdann(os.path.join(DATA, reg), 'atr')
+    idx, sym = [], []
+    for a, s in zip(ann.sample, ann.symbol):
+        if s in BEATS:
+            k = a * 5.0 / 9.0                   # indice a 200 Hz
+            if 0 <= k < N_SEG:
+                idx.append(k); sym.append(s)
+    return x, np.array(idx), sym
+
+
+class Chip:
+    """Una iteracion por tick de 200 Hz; cada etapa lee la salida ya
+    actualizada de la anterior (equivale a los strobes s1..s5 del Verilog)."""
+    def __init__(self, ancho_vent=33, lsum_bits=32):
+        self.lsb = lsum_bits
+        self.xd_l = [0] * 13; self.y1 = 0; self.y2 = 0; self.pb = 0
+        self.xd_h = [0] * 33; self.p = 0; self.pa = 0
+        self.xd_d = [0] * 5;  self.der = 0
+        self.sq = 0
+        self.xd_i = [0] * 33; self.S = 0; self.yint = 0
+        self.ven = ancho_vent
+        # FSM
+        self.state = 0; self.y_prev = 0; self.d_prev = 0; self.PEAKI = 0
+        self.lmax = 0; self.lsum = 0; self.SPKI = 0; self.NPKI = 0
+        self.n = 0; self.cnt = 0; self.beat = 0
+        self.lsum_raw = 0     # suma sin recorte para detectar desbordes
+
+    def step_fsm_tick(self):
+        """Ejecuta el ciclo del s5 y los ciclos siguientes sin s5."""
+        out = 0
+        for clk in range(6):
+            s5 = (clk == 0)
+            y_in = self.yint
+            d = y_in - self.y_prev
+            pk = (self.d_prev > 0 and d <= 0)
+            THR1 = wrap(self.NPKI + (wrap(self.SPKI - self.NPKI, 32) >> 2), 32)
+            st = self.state
+            nxt = dict(y_prev=self.y_prev, d_prev=self.d_prev, PEAKI=self.PEAKI)
+            if s5:
+                nxt = dict(y_prev=y_in, d_prev=wrap(d, 32), PEAKI=self.y_prev)
+            beat_n = 0
+            nstate = st
+            if st == 0:                              # APRENDER
+                if s5:
+                    n_old = self.n
+                    if y_in > self.lmax: self.lmax = y_in
+                    self.lsum_raw += y_in
+                    self.lsum = wrap(self.lsum + y_in, self.lsb)
+                    self.n = (self.n + 1) & 0x1FF
+                    if n_old == 511: nstate = 1
+            elif st == 1:                            # INICIAR
+                self.SPKI = self.lmax
+                self.NPKI = self.lsum >> 10
+                nstate = 2
+            elif st == 2:                            # BUSCAR
+                if s5 and pk: nstate = 3
+            elif st == 3:                            # CLASIFICAR
+                nstate = 4 if self.PEAKI > THR1 else 5
+            elif st == 4:                            # LATIDO
+                beat_n = 1
+                self.SPKI = wrap(self.SPKI + (wrap(self.PEAKI - self.SPKI, 32) >> 3), 32)
+                self.cnt = 0; nstate = 6
+            elif st == 5:                            # RUIDO
+                self.NPKI = wrap(self.NPKI + (wrap(self.PEAKI - self.NPKI, 32) >> 3), 32)
+                nstate = 2
+            elif st == 6:                            # REFRACTARIO
+                if s5:
+                    cnt_old = self.cnt
+                    self.cnt += 1
+                    if cnt_old == 39: nstate = 2
+            self.y_prev, self.d_prev, self.PEAKI = nxt['y_prev'], nxt['d_prev'], nxt['PEAKI']
+            self.state = nstate
+            if self.beat: out = 1                    # beat registrado = 1 en este ciclo
+            self.beat = beat_n
+        if self.beat: out = 1
+        return out
+
+    def tick(self, x_in):
+        # lpf
+        xd = self.xd_l
+        yn = wrap((self.y1 << 1) - self.y2 + xd[0] - (xd[6] << 1) + xd[12], 18)
+        self.xd_l = [x_in] + xd[:12]
+        self.y2 = self.y1; self.y1 = yn; self.pb = yn
+        # hpf
+        xh = self.xd_h
+        p_next = wrap(self.p + xh[0] - xh[32], 23)
+        y_next = wrap((xh[16] << 5) - p_next, 23)
+        self.xd_h = [self.pb] + xh[:32]
+        self.p = p_next; self.pa = y_next
+        # deriv
+        xv = self.xd_d
+        num = wrap((xv[0] << 1) + xv[1] - xv[3] - (xv[4] << 1), 25)
+        ds = num >> 5
+        self.xd_d = [self.pa] + xv[:4]
+        self.der = 32767 if ds > 32767 else (-32768 if ds < -32768 else wrap(ds, 16))
+        # square
+        self.sq = wrap(self.der * self.der, 32)
+        # integ (ventana configurable: 33 = tu Verilog, 32 = presentacion)
+        xi = self.xd_i
+        sale = xi[self.ven - 1]
+        tot = wrap(self.S + self.sq - sale, 37)
+        self.xd_i = [self.sq] + xi[:32]
+        self.S = tot
+        self.yint = wrap(tot >> 5, 32)
+        return self.step_fsm_tick()
+
+
+def correr(x, ven=33, lsum_bits=32):
+    chip = Chip(ven, lsum_bits)
+    beats = []               # 'muestras' del testbench = k+1
+    info = {}
+    for k, xv in enumerate(x):
+        if chip.tick(int(xv)):
+            beats.append(k + 1)
+        if k == 511 + 1:
+            info['SPKI0'] = chip.SPKI; info['lmax'] = chip.lmax
+            info['NPKI0'] = chip.NPKI; info['lsum_raw'] = chip.lsum_raw
+    return np.array(beats), info
+
+
+def evaluar(det, ann, desplaz, tol=30, desde=0):
+    det = det - desplaz
+    ann = ann[ann >= desde]; det = det[det >= desde]
+    usado = np.zeros(len(ann), bool); tp = 0
+    for d in det:
+        if len(ann) == 0: break
+        j = np.argmin(np.abs(ann - d))
+        if abs(ann[j] - d) <= tol and not usado[j]:
+            usado[j] = True; tp += 1
+    fp = len(det) - tp; fn = len(ann) - tp
+    return tp, fp, fn
+
+
+if __name__ == '__main__':
+    ven = int(sys.argv[1]) if len(sys.argv) > 1 else 33
+    for reg in REGISTROS:
+        x, ann, sym = cargar_segmento(reg)
+        det, info = correr(x, ven)
+        print(reg, "latidos:", len(det), "ultima:", det[-1] if len(det) else None, info)
